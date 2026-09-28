@@ -1,0 +1,211 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Taskhand: an agentic workflow for project management</title>
+<link href="https://fonts.googleapis.com/css2?family=Familjen+Grotesk:wght@500;700&family=Source+Sans+3:wght@400;600&display=swap" rel="stylesheet">
+<style>
+:root{--bg:#e6ecf0;--panel:#f7f9fb;--ink:#1b2733;--mute:#5b6975;--line:#c5cfd7;--go:#0d7566;--warn:#a84d16;--think:#33469a}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.5 "Source Sans 3",system-ui,sans-serif}
+h1,h2{font-family:"Familjen Grotesk",system-ui,sans-serif;margin:0}
+header{padding:28px 24px 8px;max-width:1200px;margin:auto}
+h1{font-size:clamp(28px,4vw,44px);line-height:1.05;max-width:18ch}
+header p{max-width:62ch;color:var(--mute);margin:10px 0 0}
+main{display:grid;grid-template-columns:280px 1fr 300px;gap:16px;max-width:1200px;margin:16px auto 40px;padding:0 24px}
+@media(max-width:900px){main{grid-template-columns:1fr}}
+section{background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:16px}
+h2{font-size:18px;margin-bottom:10px}
+textarea{width:100%;min-height:84px;border:1px solid var(--line);border-radius:4px;padding:8px;font:inherit;resize:vertical;background:#fff}
+button{font:600 15px "Source Sans 3",sans-serif;border:1px solid var(--ink);background:#fff;color:var(--ink);padding:7px 12px;border-radius:4px;cursor:pointer}
+button.primary{background:var(--ink);color:#fff}
+button:focus-visible,textarea:focus-visible{outline:3px solid var(--think);outline-offset:2px}
+.row{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0}
+.chip{font-weight:400;font-size:14px;border-color:var(--line)}
+ul{list-style:none;margin:0;padding:0}
+.tools li{padding:6px 0;border-top:1px solid var(--line);font-size:14px}
+.tools b{font-family:"Familjen Grotesk",sans-serif}
+#log{display:flex;flex-direction:column;gap:10px;min-height:300px}
+.step{border-left:4px solid var(--think);background:#fff;padding:10px 12px;border-radius:0 4px 4px 0}
+.step.replan{border-color:var(--warn)}
+.step.done{border-color:var(--go)}
+.step h3{margin:0 0 4px;font:700 15px "Familjen Grotesk",sans-serif}
+.step p{margin:2px 0;font-size:15px}
+.step .t{color:var(--think)}.step .o{color:var(--mute)}
+.step.replan h3{color:var(--warn)}
+.tag{font-weight:600;color:var(--warn)}
+.m{display:grid;grid-template-columns:56px 1fr 34px;gap:8px;align-items:center;margin:6px 0;font-size:14px}
+.bar{height:8px;background:var(--line);border-radius:4px;overflow:hidden;display:block}
+.bar b{display:block;height:100%;background:var(--go)}.bar b.over{background:var(--warn)}
+#tasks li{padding:7px 0;border-top:1px solid var(--line);font-size:14px;display:flex;flex-direction:column}
+#tasks small{color:var(--mute)}#tasks .flag span{color:var(--warn);font-weight:600}
+.empty{color:var(--mute)}
+@media(prefers-reduced-motion:no-preference){.step{animation:in .25s ease-out}@keyframes in{from{opacity:0}to{opacity:1}}}
+</style>
+</head>
+<body>
+<header>
+<h1>Taskhand, a project agent that re-plans as it goes</h1>
+<p>Give the agent a goal. It picks tools, checks what happened, and changes its own plan when a step fails. Nothing here is a fixed script: the loop is think, act, observe, repeat.</p>
+</header>
+<main>
+<section aria-label="Goal">
+<h2>Goal</h2>
+<textarea id="goal" aria-label="Goal for the agent">Plan the website launch</textarea>
+<div class="row">
+<button class="chip" data-g="Plan the website launch">Plan a launch</button>
+<button class="chip" data-g="Rebalance the team workload">Rebalance workload</button>
+<button class="chip" data-g="Write the weekly status report">Status report</button>
+</div>
+<div class="row">
+<button class="primary" id="run">Run agent</button>
+<button id="step">Step once</button>
+<button id="reset">Reset</button>
+</div>
+<h2 style="margin-top:16px">Tools</h2>
+<ul class="tools">
+<li><b>create_task</b> adds a task</li>
+<li><b>assign_task</b> sets an owner, checks capacity</li>
+<li><b>check_workload</b> finds overloaded people</li>
+<li><b>summarize</b> counts progress and overdue work</li>
+<li><b>flag_overdue</b> flags and reschedules late tasks</li>
+</ul>
+</section>
+
+<section aria-label="Agent loop" aria-live="polite">
+<h2>Agent loop</h2>
+<div id="log"><p class="empty">Choose a goal and run the agent. Each step shows its reasoning, the tool it used, and what came back.</p></div>
+</section>
+
+<section aria-label="Workspace">
+<h2>Team capacity</h2>
+<div id="team"></div>
+<h2 style="margin-top:16px">Tasks</h2>
+<ul id="tasks"></ul>
+</section>
+</main>
+
+<script>
+const $=s=>document.querySelector(s);
+const RANK={low:0,medium:1,high:2};
+let S,Q,ctx,timer,n;
+
+function reset(){
+  clearInterval(timer);timer=null;
+  S={team:[{n:'Asha',cap:2},{n:'Ravi',cap:2},{n:'Meera',cap:3}],tasks:[],id:0};
+  Q=[];ctx={loops:0,last:null,started:false};n=0;
+  $('#log').innerHTML='<p class="empty">Choose a goal and run the agent. Each step shows its reasoning, the tool it used, and what came back.</p>';
+  $('#run').textContent='Run agent';
+  draw();
+}
+const load=w=>S.tasks.filter(t=>t.who===w&&t.status!=='done').length;
+const spare=ex=>S.team.filter(m=>m.n!==ex).sort((a,b)=>(load(a.n)-a.cap)-(load(b.n)-b.cap))[0].n;
+const add=(title,pri,who,status,due)=>{S.tasks.push({id:++S.id,title,pri,who,status:status||'todo',due:due==null?7:due});};
+
+function plan(){
+  const g=$('#goal').value.toLowerCase();
+  ctx.started=true;
+  if(/balanc|overload|workload/.test(g)){
+    [['Fix login bug','high'],['Update docs','low'],['Code review','medium'],['Refactor database','medium']].forEach(t=>add(t[0],t[1],'Ravi'));
+    add('Design review','medium','Asha');
+    draw();
+    Q=[{tool:'check_workload',thought:'Workload problems are about capacity. Before moving anything I need to see who is over.'}];
+    return 'Goal is about balance. I will measure first, then move work, then verify.';
+  }
+  if(/report|status|progress|overdue/.test(g)){
+    add('Ship onboarding flow','high','Asha','done',-3);
+    add('Payment integration','high','Ravi','doing',-2);
+    add('Write release notes','low','Meera','todo',-1);
+    add('Set up analytics','medium','Meera','doing',4);
+    add('Load testing','medium','Asha','todo',6);
+    draw();
+    Q=[{tool:'summarize',thought:'A status report needs real numbers. I will read the board before writing anything.'},{tool:'finish'}];
+    return 'Goal is a report. I will gather progress data first.';
+  }
+  const items=[['Design landing page','high','Asha'],['Build sign-up API','high','Asha'],['Write launch copy','low','Meera'],['QA testing','medium','Asha'],['Deploy to production','high','Ravi']];
+  Q=[];
+  items.forEach(i=>{
+    Q.push({tool:'create_task',a:{title:i[0],pri:i[1]},thought:'"'+i[0]+'" is a launch deliverable.'});
+    Q.push({tool:'assign_task',a:{id:'last',who:i[2]},thought:i[2]+' has the right skills for this, so I will try them first.'});
+  });
+  Q.push({tool:'finish'});
+  return 'Goal is a launch. I will break it into five deliverables and assign each one.';
+}
+
+function card(cls,title,parts){
+  const d=document.createElement('div');d.className='step '+cls;
+  d.innerHTML='<h3>'+title+'</h3>'+parts.map(p=>'<p class="'+p[0]+'">'+p[1]+'</p>').join('');
+  const l=$('#log');if(l.querySelector('.empty'))l.innerHTML='';
+  l.appendChild(d);d.scrollIntoView({block:'nearest'});
+}
+
+function step(){
+  if(!ctx.started){card('','Planning',[['t','Thought: '+plan()]]);draw();return true;}
+  const it=Q.shift();
+  if(!it){return false;}
+  n++;
+  const a=it.a||{};
+  let obs='',cls=it.replan?'replan':'',title='Step '+n+': '+it.tool;
+  if(it.replan)title='Step '+n+': '+it.tool+' <span class="tag">(re-planned)</span>';
+  if(it.tool==='create_task'){
+    add(a.title,a.pri,null);ctx.last=S.id;obs='Created task #'+S.id+' with '+a.pri+' priority.';
+  }else if(it.tool==='assign_task'){
+    if(a.who===null)a.who=spare(a.from);
+    const id=a.id==='last'?ctx.last:a.id,t=S.tasks.find(x=>x.id===id),m=S.team.find(x=>x.n===a.who);
+    if(load(a.who)>=m.cap){
+      const alt=spare(a.who);
+      obs='Rejected. '+a.who+' already has '+load(a.who)+' of '+m.cap+' open tasks.';
+      Q.unshift({tool:'assign_task',a:{id,who:alt},replan:true,thought:'Re-plan: '+a.who+' is full. '+alt+' has the most spare capacity, so I will route "'+t.title+'" there.'});
+    }else{t.who=a.who;obs='Assigned "'+t.title+'" to '+a.who+' ('+load(a.who)+' of '+m.cap+').';}
+  }else if(it.tool==='check_workload'){
+    const over=S.team.filter(m=>load(m.n)>m.cap);
+    if(!over.length){obs='Everyone is within capacity.';}
+    else if(++ctx.loops>3){obs='Still over capacity after three passes. Handing this to a person.';}
+    else{
+      const moves=[];
+      over.forEach(m=>{
+        S.tasks.filter(t=>t.who===m.n&&t.status!=='done').sort((x,y)=>RANK[x.pri]-RANK[y.pri]).slice(0,load(m.n)-m.cap).forEach(t=>moves.push(t));
+      });
+      obs=over.map(m=>m.n+' has '+load(m.n)+' of '+m.cap+' tasks').join(', ')+'. '+moves.length+' task(s) to move.';
+      moves.forEach(t=>Q.unshift({tool:'assign_task',a:{id:t.id,who:null,from:t.who},replan:true,thought:'Re-plan: move "'+t.title+'" ('+t.pri+' priority) because lower-priority work is the cheapest to hand off.'}));
+      Q.splice(moves.length,0,{tool:'check_workload',thought:'Verify the moves worked instead of assuming they did.'});
+    }
+  }else if(it.tool==='summarize'){
+    const d=S.tasks.filter(t=>t.status==='done').length,o=S.tasks.filter(t=>t.status!=='done'&&t.due<0);
+    obs=d+' of '+S.tasks.length+' tasks done. '+o.length+' overdue: '+o.map(t=>t.title).join(', ')+'.';
+    if(o.length)Q.unshift({tool:'flag_overdue',a:{ids:o.map(t=>t.id)},replan:true,thought:'Re-plan: overdue work changes the report from "on track" to "at risk". I will flag it and set new dates.'});
+  }else if(it.tool==='flag_overdue'){
+    S.tasks.filter(t=>a.ids.includes(t.id)).forEach(t=>{t.flag=true;t.due=2;});
+    obs='Flagged '+a.ids.length+' task(s) and moved their due date to 2 days out.';
+  }else if(it.tool==='finish'){
+    const done=S.tasks.filter(t=>t.status==='done').length;
+    card('done','Done',[['o','Goal complete. '+S.tasks.length+' tasks on the board, '+done+' finished, '+S.tasks.filter(t=>t.flag).length+' flagged.']]);
+    draw();return false;
+  }
+  card(cls,title,[['t','Thought: '+it.thought],['o','Observation: '+obs]]);
+  draw();
+  if(!Q.length&&it.tool!=='finish'){
+    if(/balanc|overload|workload/.test($('#goal').value.toLowerCase()))Q.push({tool:'finish'});
+  }
+  return true;
+}
+
+function draw(){
+  $('#team').innerHTML=S.team.map(m=>{const l=load(m.n);return '<div class="m"><span>'+m.n+'</span><i class="bar"><b class="'+(l>m.cap?'over':'')+'" style="width:'+Math.min(100,l/m.cap*100)+'%"></b></i><em>'+l+'/'+m.cap+'</em></div>';}).join('');
+  $('#tasks').innerHTML=S.tasks.length?S.tasks.map(t=>'<li class="'+(t.flag?'flag':'')+'"><span>'+t.title+'</span><small>'+t.pri+' priority, '+(t.who||'unassigned')+(t.due<0?', overdue':'')+(t.status==='done'?', done':'')+'</small></li>').join(''):'<li class="empty">No tasks yet. Give the agent a goal.</li>';
+}
+
+$('#run').onclick=()=>{
+  if(timer){clearInterval(timer);timer=null;$('#run').textContent='Run agent';return;}
+  $('#run').textContent='Pause';
+  timer=setInterval(()=>{if(!step()){clearInterval(timer);timer=null;$('#run').textContent='Run agent';}},900);
+};
+$('#step').onclick=step;
+$('#reset').onclick=reset;
+document.querySelectorAll('.chip').forEach(b=>b.onclick=()=>{$('#goal').value=b.dataset.g;reset();});
+$('#goal').addEventListener('input',reset);
+reset();
+</script>
+</body>
+</html>
